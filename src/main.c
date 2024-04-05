@@ -12,6 +12,10 @@
     extern int size_##_n
 
 //IRX for togleable features
+#ifdef SUPPORT_SYSTEM_2X6
+#include <iopcontrol_special.h>
+IMPORT_BIN2C(ioprp_img);
+#endif
 #ifdef ETH
 IMPORT_BIN2C(ps2ip_irx);
 IMPORT_BIN2C(ps2smap_irx);
@@ -60,6 +64,10 @@ IMPORT_BIN2C(dvrdrv_irx);
 IMPORT_BIN2C(dvrfile_irx);
 #endif
 
+#ifndef USE_ROM_CDVDFSV
+IMPORT_BIN2C(cdvd_irx);
+#endif
+
 // Mandatory IRX
 IMPORT_BIN2C(iomanx_irx);
 IMPORT_BIN2C(filexio_irx);
@@ -71,7 +79,6 @@ IMPORT_BIN2C(ps2fs_irx);
 IMPORT_BIN2C(poweroff_irx);
 IMPORT_BIN2C(loader_elf);
 IMPORT_BIN2C(iopmod_irx);
-IMPORT_BIN2C(cdvd_irx);
 IMPORT_BIN2C(ps2kbd_irx);
 IMPORT_BIN2C(hdl_info_irx);
 IMPORT_BIN2C(mcman_irx);
@@ -1152,18 +1159,42 @@ static void loadBasicModules(void)
 	DPRINTF("Hello from EE SIO!\n");
 #endif
 
+#ifdef USE_ROM_MCMAN
+#ifdef SUPPORT_SYSTEM_2X6
 	id = SifExecModuleBuffer(mcman_irx, size_mcman_irx, 0, NULL, &ret);  //Home
+	DPRINTF(" [DONGLEMAN]: id=%d, ret=%d\n", id, ret);
+#else //SECURITY DONGLE
+	id = SifLoadStartModule("rom0:MCMAN", 0, NULL, &ret);
+	DPRINTF(" [rom0:MCMAN]: id=%d, ret=%d\n", id, ret);
+#endif
+	id = SifLoadStartModule("rom0:MCSERV", 0, NULL, &ret);
+	DPRINTF(" [rom0:MCSERV]: id=%d, ret=%d\n", id, ret);
+#else
+	id = SifExecModuleBuffer(mcman_irx, size_mcman_irx, 0, NULL, &ret);  //Home
+#ifdef HOMEBREW_DONGLEMAN
+	DPRINTF(" [DONGLEMAN]: id=%d ret=%d\n", id, ret);
+#else
 	DPRINTF(" [MCMAN]: id=%d ret=%d\n", id, ret);
-	//SifLoadModule("rom0:MCMAN", 0, NULL); //Sony
+#endif
 	id = SifExecModuleBuffer(mcserv_irx, size_mcserv_irx, 0, NULL, &ret);  //Home
 	DPRINTF(" [MCSERV]: id=%d ret=%d\n", id, ret);
-	//SifLoadModule("rom0:MCSERV", 0, NULL); //Sony
+#endif
+
 #ifdef HOMEBREW_SIO2MAN
 	id = SifExecModuleBuffer(padman_irx, size_padman_irx, 0, NULL, &ret);  //Home
 	DPRINTF(" [PADMAN]: id=%d ret=%d\n", id, ret);
 #else
-	id = SifLoadModule("rom0:PADMAN", 0, NULL);
-	DPRINTF(" [rom0:PADMAN]: id=%d\n", id);
+	id = SifLoadStartModule("rom0:PADMAN", 0, NULL, &ret);
+	DPRINTF(" [rom0:PADMAN]: id=%d, ret=%d\n", id, ret);
+#endif
+
+#if defined(LOAD_DAEMON) && defined(SUPPORT_SYSTEM_2X6)
+	id = SifLoadStartModule("rom0:DAEMON", 0, NULL, &ret);
+	DPRINTF(" [DAEMON]: id=%d ret=%d\n", id, ret);
+#endif
+
+#if defined(LOAD_LED) && defined(SUPPORT_SYSTEM_2X6) && !defined(LOAD_DOGBAIT)
+	SifLoadStartModule("rom0:LED", 0, NULL, NULL); //
 #endif
 }
 //------------------------------
@@ -1174,8 +1205,13 @@ static void loadCdModules(void)
 	int ret, id;
 
 	if (!have_cdvd) {
+#ifdef USE_ROM_CDVDFSV //so far only recommended for arcade?
+    	id = SifLoadStartModule("rom0:CDVDFSV", 0, NULL, &ret);
+    	DPRINTF(" [rom0:CDVDFSV]: ID=%d, ret=%d\n", id, ret);
+#else
 		id = SifExecModuleBuffer(cdvd_irx, size_cdvd_irx, 0, NULL, &ret);
 		DPRINTF(" [CDVD]: id=%d, ret=%d\n", id, ret);
+#endif
 		sceCdInit(SCECdINoD);  // SCECdINoD init without check for a disc. Reduces risk of a lockup if the drive is in a erroneous state.
 		CDVD_Init();
 		have_cdvd = 1;
@@ -1275,10 +1311,12 @@ static void getExternalFilePath(const char *argPath, char *filePath)
 		mountDVRPParty(party);
 
 #endif
+#ifndef SUPPORT_SYSTEM_2X6
 	} else if (!strncmp(argPath, "cdfs", 4)) {
 		strcpy(filePath, argPath);
 		CDVD_FlushCache();
 		CDVD_DiskReady(0);
+#endif
 	} else {
 		genFixPath(argPath, filePath);
 	}
@@ -1988,15 +2026,26 @@ static void CleanUp(void)
 //------------------------------
 int IsSupportedFileType(char *path)
 {
+#ifdef SUPPORT_SYSTEM_2X6
+    if(strchr(path, ':') != NULL) {
+        if ((genCmpFileExt(path, "TXT") || genCmpFileExt(path, "CHT") || genCmpFileExt(path, "CFG") || genCmpFileExt(path, "INI")  || genCmpFileExt(path, "CNF") ) || (genCmpFileExt(path, "JPG") || genCmpFileExt(path, "JPEG"))) return 1;
+        else if((checkELFheader(path, TYPE_IRX) >= 0)) return 1;
+        else return(checkELFheader(path, TYPE_ELF) >= 0);
+    } else //No ':', hence no device name in path, which means it is a special action (e.g. MISC/*).
+        return 1;
+#else
 	if (strchr(path, ':') != NULL) {
 		if (genCmpFileExt(path, "ELF")) {
-			return (checkELFheader(path) >= 0);
+			return (checkELFheader(path, TYPE_ELF) >= 0);
+		} else if(genCmpFileExt(path, "IRX")) {
+			 return (checkELFheader(path, TYPE_IRX) >= 0);
 		} else if ((genCmpFileExt(path, "TXT") || genCmpFileExt(path, "CHT") || genCmpFileExt(path, "CFG") || genCmpFileExt(path, "INI")  || genCmpFileExt(path, "CNF") ) || (genCmpFileExt(path, "JPG") || genCmpFileExt(path, "JPEG"))) {
 			return 1;
 		} else
 			return 0;
 	} else  //No ':', hence no device name in path, which means it is a special action (e.g. MISC/*).
 		return 1;
+#endif
 }
 //------------------------------
 //endfunc IsSupportedFileType
@@ -2022,7 +2071,7 @@ static void Execute(char *pathin)
 	if (!uLE_related(path, pathin))  //1==uLE_rel 0==missing, -1==other dev
 		return;
 
-Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
+ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 
 	pathSep = strchr(path, '/');
 
@@ -2032,7 +2081,7 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 			goto CheckELF_path;
 		strcpy(fullpath, "mc0:");
 		strcat(fullpath, path + 3);
-		if (checkELFheader(fullpath) > 0)
+		if (checkELFheader(fullpath, TYPE_ELF) > 0)
 			goto ELFchecked;
 		fullpath[2] = '1';
 		goto CheckELF_fullpath;
@@ -2044,7 +2093,7 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 		goto CheckELF_path;
 	} else if (!strncmp(path, "hdd0:/", 6)) {
 		loadHddModules();
-		if ((t = checkELFheader(path)) <= 0)
+		if ((t = checkELFheader(path, TYPE_ELF)) <= 0)
 			goto ELFnotFound;
 		//coming here means the ELF is fine
 		sprintf(party, "hdd0:%s", path + 6);
@@ -2052,28 +2101,28 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 		sprintf(fullpath, "pfs0:%s", p);
 		*p = 0;
 		goto ELFchecked;
-#ifdef DVRP
-	} else if (!strncmp(path, "dvr_hdd0:/", 10)) {
-		loadDVRPHddModules();
-		if ((t = checkELFheader(path)) <= 0)
-			goto ELFnotFound;
-		//coming here means the ELF is fine
-		sprintf(party, "dvr_hdd0:%s", path + 10);
-		p = strchr(party, '/');
-		sprintf(fullpath, "dvr_pfs0:%s", p);
-		*p = 0;
-		goto ELFchecked;
-#endif
-#ifdef XFROM
+ #ifdef DVRP
+ 	} else if (!strncmp(path, "dvr_hdd0:/", 10)) {
+ 		loadDVRPHddModules();
+ 		if ((t = checkELFheader(path, TYPE_ELF)) <= 0)
+ 			goto ELFnotFound;
+ 		//coming here means the ELF is fine
+ 		sprintf(party, "dvr_hdd0:%s", path + 10);
+ 		p = strchr(party, '/');
+ 		sprintf(fullpath, "dvr_pfs0:%s", p);
+ 		*p = 0;
+ 		goto ELFchecked;
+ #endif
+ #ifdef XFROM
 	} else if (!strncmp(path, "xfrom:/", 7)) {
 		loadFlashModules();
-		if ((t = checkELFheader(path)) <= 0)
+		if ((t = checkELFheader(path, TYPE_ELF)) <= 0)
 			goto ELFnotFound;
 		strcpy(fullpath, path);
 		goto ELFchecked;
-#endif
+ #endif
 	} else if (!strncmp(path, "mass", 4)) {
-		if ((t = checkELFheader(path)) <= 0)
+		if ((t = checkELFheader(path, TYPE_ELF)) <= 0)
 			goto ELFnotFound;
 		//coming here means the ELF is fine
 		party[0] = 0;
@@ -2082,7 +2131,7 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 		if (pathSep && (pathSep - path < 7) && pathSep[-1] == ':')
 			strcpy(fullpath + (pathSep - path), pathSep + 1);
 		goto ELFchecked;
-#ifdef ETH
+ #ifdef ETH
 	} else if (!strncmp(path, "host:", 5)) {
 		initHOST();
 		party[0] = 0;
@@ -2093,7 +2142,7 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 			strcat(fullpath, path + 5);
 		makeHostPath(fullpath, fullpath);
 		goto CheckELF_fullpath;
-#endif
+ #endif
 	} else if (!stricmp(path, setting->Misc_OSDSYS)) {
 		char arg0[20], arg1[20], arg2[20], arg3[40];
 		char *args[4] = {arg0, arg1, arg2, arg3};
@@ -2268,12 +2317,12 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 		//The method below was used earlier, but causes reset with new ELF loader
 		//party[0]=0;
 		//strcpy(fullpath,"rom0:OSDSYS");
-#ifdef ETH
+ #ifdef ETH
 	} else if (!stricmp(path, setting->Misc_PS2Net)) {
 		mainMsg[0] = 0;
 		loadNetModules();
 		return;
-#endif
+ #endif
 	} else if (!stricmp(path, setting->Misc_PS2PowerOff)) {
 		mainMsg[0] = 0;
 		drawMsg(LNG(Powering_Off_Console));
@@ -2347,17 +2396,21 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 		}
 		Show_build_info();
 		return;
+ #ifndef SUPPORT_SYSTEM_2X6
 	} else if (!strncmp(path, "cdfs", 4)) {
 		CDVD_FlushCache();
 		CDVD_DiskReady(0);
 		party[0] = 0;
 		goto CheckELF_path;
+ #endif
 	} else if (!strncmp(path, "rom", 3)) {
 		party[0] = 0;
 	CheckELF_path:
 		strcpy(fullpath, path);
 	CheckELF_fullpath:
-		if ((t = checkELFheader(fullpath)) <= 0)
+		if (checkELFheader(fullpath, TYPE_IRX)>0)
+			goto IRXFound;
+		if ((t = checkELFheader(fullpath, TYPE_ELF)) <= 0)
 			goto ELFnotFound;
 	ELFchecked:
 		CleanUp();
@@ -2371,6 +2424,27 @@ Recurse_for_ESR:  //Recurse here for PS2Disc command with ESR disc
 			sprintf(mainMsg, "%s: %s.", LNG(This_file_isnt_an_ELF), fullpath);
 		return;
 	}
+	return;
+	IRXcheckheader:
+		if ((t = checkELFheader(fullpath, TYPE_IRX)) <= 0) {
+			if (t == 0)
+				sprintf(mainMsg, "%s %s.", fullpath, LNG(is_Not_Found));
+			else
+				sprintf(mainMsg, "%s: %s.", LNG(This_file_isnt_an_IRX), fullpath);
+			return;
+		}
+	IRXFound:
+	p = strrchr(fullpath, '/');
+	sprintf(mainMsg, LNG(confirm_irx_exec), '\n', (p!=NULL) ? p : "");
+	if (ynDialog(mainMsg)>0) {
+		int ret, id;
+		id = SifLoadStartModule(fullpath, 0, NULL, &ret);
+		sprintf(mainMsg, "%s: id:%d, ret:%d  (%s)",
+		(p!=NULL) ? p+1 : "MODULE",
+		id, ret,
+		(id>0 && ret!=1) ? LNG(OK) : LNG(Failed));
+		DPRINTF("%s\n", mainMsg);
+	} else mainMsg[0] = 0;
 }
 //------------------------------
 //endfunc Execute
@@ -2381,10 +2455,12 @@ static void Reset()
 {
 #ifndef NO_IOP_RESET
 	SifInitRpc(0);
-	while (!SifIopReset("", 0)) {
-	};
-	while (!SifIopSync()) {
-	};
+#ifdef SUPPORT_SYSTEM_2X6
+	while (!SifIopRebootBuffer(ioprp_img, size_ioprp_img)) {};
+#else
+	while (!SifIopReset("", 0)) {};
+#endif
+	while (!SifIopSync()) {};
 	SifInitRpc(0);
 #endif
 	SifLoadFileInit();
@@ -2411,19 +2487,28 @@ int i, d;
     DPRINTF(" [UDPTTY]: id=%d, ret=%d\n", i, d);
 #endif
 	loadBasicModules();
+#ifndef SUPPORT_SYSTEM_2X6
 	loadCdModules();
-
+#endif
+	DPRINTF("Initializing fileXio RPC\n");
 	fileXioInit();
 	//Increase the FILEIO R/W buffer size to reduce overhead.
 	fileXioSetRWBufferSize(128 * 1024);
-	DPRINTF("Initializing mc rpc\n");
-#ifdef HOMEBREW_SIO2MAN
-	mcInit(MC_TYPE_XMC);
-#else
+	DPRINTF("Initializing MCMAN RPC\n");
+#ifndef SUPPORT_SYSTEM_2X6
+ #ifdef USE_ROM_MCMAN
+	DPRINTF("mcInit(MC_TYPE_MC)..");
 	mcInit(MC_TYPE_MC);
+ #else
+	DPRINTF("mcInit(MC_TYPE_XMC)..");
+	mcInit(MC_TYPE_XMC);
+ #endif
+#else
+	DPRINTF("mcInit(MC_TYPE_XMC)..");
+	mcInit(MC_TYPE_XMC);
 #endif
-	DPRINTF("RESET FINISHED\n");
-	//	setupPad();
+	DPRINTF(".done!\n");
+	//setupPad();
 }
 //------------------------------
 //endfunc Reset
@@ -2484,6 +2569,7 @@ static void InitializeBootExecPath()
 	RONVER[4] = '\0';
 	ROMVersion = strtoul(RONVER, NULL, 16);
 	//Handle special cases, before osdmain.elf was supported.
+#ifndef SUPPORT_SYSTEM_2X6
 	switch (ROMVER_data[4]) {
 		case 'E':
 			if (!strncmp(ROMVER_data, "0120", 4))
@@ -2514,7 +2600,9 @@ static void InitializeBootExecPath()
 		sprintf(default_OSDSYS_path2, "/Incompatible Unit (0x%03x)", (ROMVersion)&~0x0F);
 	else
 		sprintf(default_OSDSYS_path2, "mc:/B%cEXEC-SYSTEM/%s", rough_region, file);
-
+#else
+	strcpy(default_OSDSYS_path, "mc0:boot.bin");
+#endif
 }
 //------------------------------
 //endfunc InitializeBootExecPath
@@ -2537,6 +2625,7 @@ enum BOOT_DEVICE {
 
 int main(int argc, char *argv[])
 {
+	DPRINTF("wLaunchELF ISR compiled %s %s\n", __DATE__, __TIME__);
 	char *p;
 	int event, post_event = 0;
 	char RunPath[MAX_PATH];
@@ -2672,8 +2761,8 @@ int main(int argc, char *argv[])
 	DPRINTF("Getting IPCONFIG\n");
 	getIpConfig();
 
-	WaitTime = Timer();
-	DPRINTF("setup pad\n");
+	//WaitTime = Timer();
+	DPRINTF("setupPad()\n");
 	setupPad();  //Comment out this line when using early setupPad above
 	DPRINTF("Starting keyboard\n");
 	startKbd();
@@ -2697,18 +2786,34 @@ int main(int argc, char *argv[])
 	else
 		sprintf(mainMsg, "%s", LNG(Loaded_Config));
 
+#ifdef SUPPORT_SYSTEM_2X6
+#define ACJV_PATHCNT 5
+	int id, ret;
+	const char* ACJVPATHS[ACJV_PATHCNT] = {"./ACJVLOAD.IRX", "mc0:/ACJVLOAD.IRX", "mc1:/ACJVLOAD.IRX", "mass0:/ACJVLOAD.IRX", "mass1:/ACJVLOAD.IRX"};
+	for (i=0;i<ACJV_PATHCNT;i++) {
+		id = SifLoadStartModule(ACJVPATHS[i], 0, NULL, &ret);
+		DPRINTF(" [%s]: ID=%d, ret=%d\n", ACJVPATHS[i], id, ret);
+		if (id>0) { //like ADDDRV, we only care if module made it's way to the IOP. since it always returns NO_RESIDENT_END
+			i = -1;
+			break;
+		}
+	}
+	sprintf(mainMsg + strlen(mainMsg), (i == -1) ? " | ACJVLOAD.IRX loaded" : " | ACJVLOAD.IRX not found");
+	DPRINTF("%s\n",mainMsg);
+#endif
+	
 	//Here nearly everything is ready for the main menu event loop
 	//But before we start that, we need to validate CNF_Path
 	Validate_CNF_Path();
-
 	RunPath[0] = 0;  //Nothing to run yet
 	cdmode = -1;     //flag unchecked cdmode state
 	event = 1;       //event = initial entry
 	DPRINTF("starting main menu event loop\n");
 	//----- Start of main menu event loop -----
 	while (1) {
-		int DiscType_ix;
 
+		int DiscType_ix;
+#ifndef SUPPORT_SYSTEM_2X6
 		//Background event section
 		uLE_cdStop();              //Test disc state and if needed stop disc (updates cdmode)
 		if (cdmode == old_cdmode)  //if disc detection did not change state
@@ -2759,7 +2864,7 @@ int main(int argc, char *argv[])
 			if ((timeout / 1000) != (prev_timeout / 1000))
 				event |= 8;  //event |= visible timeout change
 		}
-
+#endif
 		//Display section
 		if (event || post_event) {  //NB: We need to update two frame buffers per event
 			if (!(setting->GUI_skin[0]))
